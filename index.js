@@ -88,7 +88,11 @@ app.post("/cli", async (req, res) => {
 
     let output = []
 
-    if (cmd === "ping") {
+    if (cmd === "echo") {
+        output.push(args.slice(1).join(" "))
+    }
+
+    else if (cmd === "ping") {
         if (!isValidHost(host)) {
             return res.json({ output: ["ERROR: invalid host"] })
         }
@@ -105,12 +109,11 @@ app.post("/cli", async (req, res) => {
             }
         }
 
-        output.push(`PING ${host} (AUTO MODE)`)
+        output.push(`PING ${host} (HYBRID SAFE MODE)`)
         output.push("")
 
         let total = 0
         let success = 0
-        let usedHttpFallback = false
         let icmpFailed = false
 
         for (let i = 0; i < count; i++) {
@@ -128,7 +131,6 @@ app.post("/cli", async (req, res) => {
                     const http = await httpPing(host)
 
                     if (http.ok) {
-                        usedHttpFallback = true
                         output.push(`HTTP Reply: time=${http.time}ms status=${http.status}`)
                         total += http.time
                         success++
@@ -136,19 +138,9 @@ app.post("/cli", async (req, res) => {
                         output.push("Request timed out")
                     }
                 }
-            } catch (e) {
+            } catch {
                 icmpFailed = true
-
-                const http = await httpPing(host)
-
-                if (http.ok) {
-                    usedHttpFallback = true
-                    output.push(`HTTP Reply: time=${http.time}ms status=${http.status}`)
-                    total += http.time
-                    success++
-                } else {
-                    output.push("Request failed")
-                }
+                output.push("Error reaching host")
             }
         }
 
@@ -156,20 +148,19 @@ app.post("/cli", async (req, res) => {
         const loss = ((count - success) / count) * 100
 
         output.push("")
-
-        if (icmpFailed && usedHttpFallback) {
-            output.push("MODE: ICMP FAILED → HTTP FALLBACK USED")
-        } else if (!icmpFailed) {
-            output.push("MODE: ICMP SUCCESS")
-        } else {
-            output.push("MODE: FULL FAILURE")
-        }
-
         output.push(`Packets: Sent=${count}, Received=${success}, Loss=${loss}%`)
         output.push(`Average latency: ${avg}ms`)
     }
 
     else if (cmd === "trace") {
+        if (!isValidHost(host)) {
+            return res.json({ output: ["ERROR: invalid host"] })
+        }
+
+        if (isPrivateIP(host)) {
+            return res.json({ output: ["ERROR: blocked IP range"] })
+        }
+
         output.push(`TRACE ${host}`)
         output.push("1 Client")
         output.push("2 Network Layer")
@@ -177,11 +168,11 @@ app.post("/cli", async (req, res) => {
         output.push("TRACE COMPLETE")
     }
 
-    else if (cmd === "echo") {
-        output.push(args.slice(1).join(" "))
-    }
-
     else if (cmd === "fetch") {
+        if (!isValidHost(host)) {
+            return res.json({ output: ["ERROR: invalid host"] })
+        }
+
         try {
             const r = await fetch(`https://${host}`)
             const text = await r.text()
@@ -194,6 +185,30 @@ app.post("/cli", async (req, res) => {
         }
     }
 
+    else if (cmd === "dns") {
+        output.push(`DNS LOOKUP: ${host}`)
+        output.push("Resolved (system mode / simulated)")
+    }
+
+    else if (cmd === "geo") {
+        try {
+            const r = await fetch(`http://ip-api.com/json/${host}`)
+            const geo = await r.json()
+
+            if (!geo || geo.status !== "success") {
+                output.push("GEO LOOKUP FAILED")
+            } else {
+                output.push(`IP: ${geo.query}`)
+                output.push(`Country: ${geo.country}`)
+                output.push(`Region: ${geo.regionName}`)
+                output.push(`City: ${geo.city}`)
+                output.push(`ISP: ${geo.isp}`)
+            }
+        } catch {
+            output.push("GEO LOOKUP FAILED")
+        }
+    }
+
     else {
         output.push("UNKNOWN COMMAND")
     }
@@ -202,5 +217,5 @@ app.post("/cli", async (req, res) => {
 })
 
 app.listen(process.env.PORT || 3000, () => {
-    console.log("Auto-Fallback CLI Running")
+    console.log("Secure Hybrid CLI Running")
 })
