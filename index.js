@@ -13,7 +13,7 @@ app.post("/geo", async (req, res) => {
 
     const response = await fetch(url, {
         headers: {
-            "User-Agent": "RobloxOSMProject"
+            "User-Agent": "RobloxGeoApp"
         }
     });
 
@@ -24,27 +24,6 @@ app.post("/geo", async (req, res) => {
         lat: Number(p.lat),
         lon: Number(p.lon)
     })));
-});
-
-app.get("/tile", async (req, res) => {
-    try {
-        const { z, x, y } = req.query;
-
-        const url = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
-
-        const response = await fetch(url, {
-            headers: {
-                "User-Agent": "Mozilla/5.0"
-            }
-        });
-
-        const buffer = await response.arrayBuffer();
-
-        res.setHeader("Content-Type", "image/png");
-        res.send(Buffer.from(buffer));
-    } catch (e) {
-        res.status(500).send("error");
-    }
 });
 
 app.listen(process.env.PORT || 3000);
