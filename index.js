@@ -7,6 +7,8 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
+const rateMap = {}
+
 function parseCommand(input) {
     return input.trim().split(/\s+/)
 }
@@ -21,14 +23,48 @@ function normalizeTarget(target) {
         .split(":")[0]
 }
 
+function isPrivateIP(host) {
+    return (
+        host.startsWith("127.") ||
+        host.startsWith("10.") ||
+        host.startsWith("192.168.") ||
+        host.startsWith("172.16.") ||
+        host === "localhost"
+    )
+}
+
+function isValidHost(host) {
+    if (!host) return false
+    if (host.includes("..")) return false
+    if (host.includes(" ")) return false
+    if (host.length > 253) return false
+
+    const domainRegex = /^[a-zA-Z0-9.-]+$/
+    return domainRegex.test(host)
+}
+
+function rateLimit(ip) {
+    const now = Date.now()
+
+    if (!rateMap[ip]) {
+        rateMap[ip] = []
+    }
+
+    rateMap[ip] = rateMap[ip].filter(t => now - t < 5000)
+
+    if (rateMap[ip].length >= 5) {
+        return false
+    }
+
+    rateMap[ip].push(now)
+    return true
+}
+
 async function httpPing(host) {
     const start = Date.now()
 
     try {
-        const res = await fetch(`https://${host}`, {
-            method: "GET"
-        })
-
+        const res = await fetch(`https://${host}`, { method: "GET" })
         const end = Date.now()
 
         return {
@@ -38,38 +74,52 @@ async function httpPing(host) {
         }
     } catch {
         return {
-            ok: false,
-            time: null,
-            status: null
+            ok: false
         }
     }
 }
 
 app.post("/cli", async (req, res) => {
+    const ip = req.ip || "global"
+
+    if (!rateLimit(ip)) {
+        return res.json({ output: ["ERROR: rate limit exceeded"] })
+    }
+
     const args = parseCommand(req.body.command || "")
     const cmd = (args[0] || "").toLowerCase()
     const host = normalizeTarget(args[1])
 
     let output = []
 
-    if (cmd === "ping") {
-        if (!host) {
-            return res.json({ output: ["ERROR: missing target"] })
+    if (cmd === "echo") {
+        output.push(args.slice(1).join(" "))
+    }
+
+    else if (cmd === "ping") {
+        if (!isValidHost(host)) {
+            return res.json({ output: ["ERROR: invalid host"] })
         }
 
-        let useHttp = false
+        if (isPrivateIP(host)) {
+            return res.json({ output: ["ERROR: blocked IP range"] })
+        }
 
-        output.push(`PING ${host} (HYBRID MODE)`)
+        output.push(`PING ${host} (HYBRID SAFE MODE)`)
         output.push("")
 
-        // 1. TRY ICMP FIRST
+        let success = 0
+        let total = 0
+        let useHttp = false
+
         try {
-            const icmp = await ping.promise.probe(host, {
-                timeout: 2
-            })
+            const icmp = await ping.promise.probe(host, { timeout: 2 })
 
             if (icmp && icmp.alive) {
-                output.push(`ICMP Reply: time=${icmp.time}ms`)
+                const t = parseFloat(icmp.time) || 0
+                output.push(`ICMP Reply: time=${t}ms`)
+                success++
+                total += t
             } else {
                 useHttp = true
             }
@@ -77,20 +127,32 @@ app.post("/cli", async (req, res) => {
             useHttp = true
         }
 
-        // 2. FALLBACK HTTP
         if (useHttp) {
             const http = await httpPing(host)
 
             if (http.ok) {
                 output.push(`HTTP Reply: time=${http.time}ms`)
                 output.push(`STATUS: ${http.status}`)
+                success++
+                total += http.time
             } else {
-                output.push("REQUEST FAILED (ICMP + HTTP)")
+                output.push("REQUEST FAILED")
             }
         }
+
+        output.push("")
+        output.push(`Average latency: ${success ? (total / success).toFixed(2) : 0}ms`)
     }
 
     else if (cmd === "trace") {
+        if (!isValidHost(host)) {
+            return res.json({ output: ["ERROR: invalid host"] })
+        }
+
+        if (isPrivateIP(host)) {
+            return res.json({ output: ["ERROR: blocked IP range"] })
+        }
+
         output.push(`TRACE ${host}`)
         output.push("1 Client")
         output.push("2 Network Layer")
@@ -98,8 +160,26 @@ app.post("/cli", async (req, res) => {
         output.push("TRACE COMPLETE")
     }
 
-    else if (cmd === "echo") {
-        output.push(args.slice(1).join(" "))
+    else if (cmd === "fetch") {
+        if (!isValidHost(host)) {
+            return res.json({ output: ["ERROR: invalid host"] })
+        }
+
+        if (isPrivateIP(host)) {
+            return res.json({ output: ["ERROR: blocked IP range"] })
+        }
+
+        try {
+            const resFetch = await fetch(`https://${host}`)
+            const text = await resFetch.text()
+
+            output.push(`FETCH ${host}`)
+            output.push(`STATUS: ${resFetch.status}`)
+            output.push("")
+            output.push(text.substring(0, 2000))
+        } catch {
+            output.push("FETCH FAILED")
+        }
     }
 
     else {
@@ -110,5 +190,5 @@ app.post("/cli", async (req, res) => {
 })
 
 app.listen(process.env.PORT || 3000, () => {
-    console.log("Hybrid CLI running")
+    console.log("Secure Hybrid CLI running")
 })
