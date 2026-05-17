@@ -39,22 +39,17 @@ function isValidHost(host) {
     if (host.includes(" ")) return false
     if (host.length > 253) return false
 
-    const domainRegex = /^[a-zA-Z0-9.-]+$/
-    return domainRegex.test(host)
+    return /^[a-zA-Z0-9.-]+$/.test(host)
 }
 
 function rateLimit(ip) {
     const now = Date.now()
 
-    if (!rateMap[ip]) {
-        rateMap[ip] = []
-    }
+    if (!rateMap[ip]) rateMap[ip] = []
 
     rateMap[ip] = rateMap[ip].filter(t => now - t < 5000)
 
-    if (rateMap[ip].length >= 5) {
-        return false
-    }
+    if (rateMap[ip].length >= 5) return false
 
     rateMap[ip].push(now)
     return true
@@ -64,18 +59,26 @@ async function httpPing(host) {
     const start = Date.now()
 
     try {
-        const res = await fetch(`https://${host}`, { method: "GET" })
+        const res = await fetch(`https://${host}`)
         const end = Date.now()
 
         return {
             ok: true,
             time: end - start,
-            status: res.status
+            status: res.status,
+            headers: Object.fromEntries(res.headers.entries())
         }
     } catch {
-        return {
-            ok: false
-        }
+        return { ok: false }
+    }
+}
+
+async function geoLookup(host) {
+    try {
+        const res = await fetch(`http://ip-api.com/json/${host}`)
+        return await res.json()
+    } catch {
+        return null
     }
 }
 
@@ -83,7 +86,7 @@ app.post("/cli", async (req, res) => {
     const ip = req.ip || "global"
 
     if (!rateLimit(ip)) {
-        return res.json({ output: ["ERROR: rate limit exceeded"] })
+        return res.json({ output: ["ERROR: rate limited"] })
     }
 
     const args = parseCommand(req.body.command || "")
@@ -92,94 +95,104 @@ app.post("/cli", async (req, res) => {
 
     let output = []
 
-    if (cmd === "echo") {
-        output.push(args.slice(1).join(" "))
-    }
-
-    else if (cmd === "ping") {
+    if (cmd === "ping") {
         if (!isValidHost(host)) {
             return res.json({ output: ["ERROR: invalid host"] })
         }
 
         if (isPrivateIP(host)) {
-            return res.json({ output: ["ERROR: blocked IP range"] })
+            return res.json({ output: ["ERROR: blocked IP"] })
         }
 
-        output.push(`PING ${host} (HYBRID SAFE MODE)`)
+        let count = 4
+        for (let i = 0; i < args.length; i++) {
+            if (args[i] === "--count") {
+                count = parseInt(args[i + 1]) || 4
+            }
+        }
+
+        output.push(`PING ${host} (HYBRID + GEO ENABLED)`)
         output.push("")
 
-        let success = 0
         let total = 0
-        let useHttp = false
+        let success = 0
 
-        try {
-            const icmp = await ping.promise.probe(host, { timeout: 2 })
+        for (let i = 0; i < count; i++) {
+            try {
+                const icmp = await ping.promise.probe(host, { timeout: 2 })
 
-            if (icmp && icmp.alive) {
-                const t = parseFloat(icmp.time) || 0
-                output.push(`ICMP Reply: time=${t}ms`)
-                success++
-                total += t
-            } else {
-                useHttp = true
-            }
-        } catch {
-            useHttp = true
-        }
+                if (icmp.alive) {
+                    const t = parseFloat(icmp.time) || 0
+                    output.push(`ICMP Reply: time=${t}ms`)
+                    total += t
+                    success++
+                } else {
+                    const http = await httpPing(host)
 
-        if (useHttp) {
-            const http = await httpPing(host)
-
-            if (http.ok) {
-                output.push(`HTTP Reply: time=${http.time}ms`)
-                output.push(`STATUS: ${http.status}`)
-                success++
-                total += http.time
-            } else {
-                output.push("REQUEST FAILED")
+                    if (http.ok) {
+                        output.push(`HTTP Reply: time=${http.time}ms status=${http.status}`)
+                        total += http.time
+                        success++
+                    } else {
+                        output.push("Request timed out")
+                    }
+                }
+            } catch {
+                output.push("Error reaching host")
             }
         }
+
+        const avg = success ? (total / success).toFixed(2) : 0
+        const loss = ((count - success) / count) * 100
+
+        const geo = await geoLookup(host)
 
         output.push("")
-        output.push(`Average latency: ${success ? (total / success).toFixed(2) : 0}ms`)
+        output.push(`Packets: Sent=${count}, Received=${success}, Loss=${loss}%`)
+        output.push(`Average latency: ${avg}ms`)
+
+        if (geo && geo.status === "success") {
+            output.push("")
+            output.push(`Location: ${geo.country}, ${geo.regionName}, ${geo.city}`)
+            output.push(`ISP: ${geo.isp}`)
+            output.push(`IP: ${geo.query}`)
+        }
     }
 
-    else if (cmd === "trace") {
-        if (!isValidHost(host)) {
-            return res.json({ output: ["ERROR: invalid host"] })
-        }
+    else if (cmd === "dns") {
+        output.push(`DNS LOOKUP: ${host}`)
+        output.push(`Resolved (simulated environment-safe mode)`)
+    }
 
-        if (isPrivateIP(host)) {
-            return res.json({ output: ["ERROR: blocked IP range"] })
-        }
+    else if (cmd === "geo") {
+        const geo = await geoLookup(host)
 
-        output.push(`TRACE ${host}`)
-        output.push("1 Client")
-        output.push("2 Network Layer")
-        output.push(`3 ${host}`)
-        output.push("TRACE COMPLETE")
+        if (!geo || geo.status !== "success") {
+            output.push("GEO LOOKUP FAILED")
+        } else {
+            output.push(`Country: ${geo.country}`)
+            output.push(`Region: ${geo.regionName}`)
+            output.push(`City: ${geo.city}`)
+            output.push(`ISP: ${geo.isp}`)
+            output.push(`IP: ${geo.query}`)
+        }
     }
 
     else if (cmd === "fetch") {
-        if (!isValidHost(host)) {
-            return res.json({ output: ["ERROR: invalid host"] })
-        }
-
-        if (isPrivateIP(host)) {
-            return res.json({ output: ["ERROR: blocked IP range"] })
-        }
-
         try {
-            const resFetch = await fetch(`https://${host}`)
-            const text = await resFetch.text()
+            const r = await fetch(`https://${host}`)
+            const text = await r.text()
 
             output.push(`FETCH ${host}`)
-            output.push(`STATUS: ${resFetch.status}`)
-            output.push("")
+            output.push(`STATUS: ${r.status}`)
             output.push(text.substring(0, 2000))
         } catch {
             output.push("FETCH FAILED")
         }
+    }
+
+    else if (cmd === "echo") {
+        output.push(args.slice(1).join(" "))
     }
 
     else {
@@ -190,5 +203,5 @@ app.post("/cli", async (req, res) => {
 })
 
 app.listen(process.env.PORT || 3000, () => {
-    console.log("Secure Hybrid CLI running")
+    console.log("Advanced Secure CLI Running")
 })
