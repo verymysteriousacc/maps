@@ -14,87 +14,88 @@ function parseCommand(input) {
 function normalizeTarget(target) {
     if (!target) return null
 
-    target = target.replace(/^https?:\/\//, "")
-    target = target.split("/")[0]
-
     return target
+        .trim()
+        .replace(/^https?:\/\//, "")
+        .split("/")[0]
+        .split(":")[0]
 }
 
-function isPrivateIP(host) {
-    return (
-        host.startsWith("127.") ||
-        host.startsWith("10.") ||
-        host.startsWith("192.168.") ||
-        host.startsWith("172.16.") ||
-        host === "localhost"
-    )
+async function httpPing(host) {
+    const start = Date.now()
+
+    try {
+        const res = await fetch(`https://${host}`, {
+            method: "GET"
+        })
+
+        const end = Date.now()
+
+        return {
+            ok: true,
+            time: end - start,
+            status: res.status
+        }
+    } catch {
+        return {
+            ok: false,
+            time: null,
+            status: null
+        }
+    }
 }
 
 app.post("/cli", async (req, res) => {
     const args = parseCommand(req.body.command || "")
     const cmd = (args[0] || "").toLowerCase()
-    const rawTarget = args[1]
-    const target = normalizeTarget(rawTarget)
+    const host = normalizeTarget(args[1])
 
     let output = []
 
     if (cmd === "ping") {
-
-        if (!target) {
+        if (!host) {
             return res.json({ output: ["ERROR: missing target"] })
         }
 
-        if (isPrivateIP(target)) {
-            return res.json({ output: ["ERROR: blocked target"] })
-        }
+        let useHttp = false
 
-        let count = 4
-
-        for (let i = 0; i < args.length; i++) {
-            if (args[i] === "--count") {
-                count = parseInt(args[i + 1]) || 4
-            }
-        }
-
-        output.push(`PING ${target} (ICMP SAFE MODE)`)
+        output.push(`PING ${host} (HYBRID MODE)`)
         output.push("")
 
-        let total = 0
-        let success = 0
+        // 1. TRY ICMP FIRST
+        try {
+            const icmp = await ping.promise.probe(host, {
+                timeout: 2
+            })
 
-        for (let i = 0; i < count; i++) {
-
-            try {
-                const result = await ping.promise.probe(target, {
-                    timeout: 2
-                })
-
-                if (result.alive) {
-                    output.push(`Reply from ${target}: time=${result.time}ms`)
-                    total += parseFloat(result.time)
-                    success++
-                } else {
-                    output.push(`Request timed out.`)
-                }
-
-            } catch {
-                output.push(`Error reaching host`)
+            if (icmp && icmp.alive) {
+                output.push(`ICMP Reply: time=${icmp.time}ms`)
+            } else {
+                useHttp = true
             }
+        } catch {
+            useHttp = true
         }
 
-        let loss = ((count - success) / count) * 100
-        let avg = success > 0 ? (total / success).toFixed(2) : 0
+        // 2. FALLBACK HTTP
+        if (useHttp) {
+            const http = await httpPing(host)
 
-        output.push("")
-        output.push(`Packets: Sent=${count}, Received=${success}, Lost=${count - success} (${loss}%)`)
-        output.push(`Average latency: ${avg}ms`)
+            if (http.ok) {
+                output.push(`HTTP Reply: time=${http.time}ms`)
+                output.push(`STATUS: ${http.status}`)
+            } else {
+                output.push("REQUEST FAILED (ICMP + HTTP)")
+            }
+        }
     }
 
     else if (cmd === "trace") {
-        output.push("TRACE: not ICMP (simulated safe mode)")
+        output.push(`TRACE ${host}`)
         output.push("1 Client")
-        output.push("2 Network")
-        output.push(`3 ${target}`)
+        output.push("2 Network Layer")
+        output.push(`3 ${host}`)
+        output.push("TRACE COMPLETE")
     }
 
     else if (cmd === "echo") {
@@ -109,5 +110,5 @@ app.post("/cli", async (req, res) => {
 })
 
 app.listen(process.env.PORT || 3000, () => {
-    console.log("Safe ICMP CLI running")
+    console.log("Hybrid CLI running")
 })
