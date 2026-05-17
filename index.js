@@ -15,7 +15,6 @@ function parseCommand(input) {
 
 function normalizeTarget(target) {
     if (!target) return null
-
     return target
         .trim()
         .replace(/^https?:\/\//, "")
@@ -31,10 +30,6 @@ function isPrivateIP(host) {
         host.startsWith("172.16.") ||
         host === "localhost"
     )
-}
-
-function isIP(host) {
-    return /^\d{1,3}(\.\d{1,3}){3}$/.test(host)
 }
 
 function isValidHost(host) {
@@ -58,17 +53,23 @@ function rateLimit(ip) {
     return true
 }
 
-async function httpPing(host) {
+async function httpPing(host, size = 32) {
+    const payload = "x".repeat(Math.min(size, 2048))
     const start = Date.now()
 
     try {
-        const res = await fetch(`https://${host}`)
+        const res = await fetch(`https://${host}`, {
+            method: "POST",
+            body: payload
+        })
+
         const end = Date.now()
 
         return {
             ok: true,
             time: end - start,
-            status: res.status
+            status: res.status,
+            sizeUsed: payload.length
         }
     } catch {
         return { ok: false }
@@ -79,7 +80,7 @@ app.post("/cli", async (req, res) => {
     const ip = req.ip || "global"
 
     if (!rateLimit(ip)) {
-        return res.json({ output: ["ERROR: rate limited"] })
+        return res.json({ output: ["ERROR: rate limit exceeded"] })
     }
 
     const args = parseCommand(req.body.command || "")
@@ -101,66 +102,77 @@ app.post("/cli", async (req, res) => {
             return res.json({ output: ["ERROR: blocked IP range"] })
         }
 
-        let count = 4
+        let size = 32
+        let loop = 1
 
         for (let i = 0; i < args.length; i++) {
-            if (args[i] === "--count") {
-                count = parseInt(args[i + 1]) || 4
+            if (args[i] === "--size") {
+                size = parseInt(args[i + 1])
+            }
+
+            if (args[i] === "--loop") {
+                loop = parseInt(args[i + 1])
             }
         }
 
-        output.push(`PING ${host} (HYBRID SAFE MODE)`)
+        if (isNaN(size)) size = 32
+        if (size < 16) size = 16
+        if (size > 10000) size = 10000
+
+        if (isNaN(loop)) loop = 1
+        if (loop < 1) loop = 1
+        if (loop > 100) loop = 100
+
+        output.push(`HYBRID LOOP PING ${host}`)
+        output.push(`PACKET SIZE: ${size} bytes`)
+        output.push(`LOOP COUNT: ${loop}`)
         output.push("")
 
-        let total = 0
         let success = 0
-        let icmpFailed = false
+        let total = 0
 
-        for (let i = 0; i < count; i++) {
+        for (let i = 0; i < loop; i++) {
+            let usedHttp = false
+
             try {
                 const icmp = await ping.promise.probe(host, { timeout: 2 })
 
                 if (icmp.alive) {
                     const t = parseFloat(icmp.time) || 0
-                    output.push(`ICMP Reply: time=${t}ms`)
-                    total += t
+                    output.push(`[${i + 1}] ICMP Reply: ${t}ms`)
                     success++
+                    total += t
                 } else {
-                    icmpFailed = true
-
-                    const http = await httpPing(host)
-
-                    if (http.ok) {
-                        output.push(`HTTP Reply: time=${http.time}ms status=${http.status}`)
-                        total += http.time
-                        success++
-                    } else {
-                        output.push("Request timed out")
-                    }
+                    usedHttp = true
                 }
             } catch {
-                icmpFailed = true
-                output.push("Error reaching host")
+                usedHttp = true
+            }
+
+            if (usedHttp) {
+                const http = await httpPing(host, size)
+
+                if (http.ok) {
+                    output.push(`[${i + 1}] HTTP Reply: ${http.time}ms`)
+                    output.push(`    Payload: ${http.sizeUsed} bytes`)
+                    success++
+                    total += http.time
+                } else {
+                    output.push(`[${i + 1}] REQUEST FAILED`)
+                }
             }
         }
 
         const avg = success ? (total / success).toFixed(2) : 0
-        const loss = ((count - success) / count) * 100
 
         output.push("")
-        output.push(`Packets: Sent=${count}, Received=${success}, Loss=${loss}%`)
+        output.push(`RESULT SUMMARY`)
+        output.push(`Successful replies: ${success}/${loop}`)
         output.push(`Average latency: ${avg}ms`)
+        output.push(`Mode: HYBRID ICMP + HTTP + SIZE + LOOP`)
     }
 
     else if (cmd === "trace") {
-        if (!isValidHost(host)) {
-            return res.json({ output: ["ERROR: invalid host"] })
-        }
-
-        if (isPrivateIP(host)) {
-            return res.json({ output: ["ERROR: blocked IP range"] })
-        }
-
         output.push(`TRACE ${host}`)
         output.push("1 Client")
         output.push("2 Network Layer")
@@ -169,10 +181,6 @@ app.post("/cli", async (req, res) => {
     }
 
     else if (cmd === "fetch") {
-        if (!isValidHost(host)) {
-            return res.json({ output: ["ERROR: invalid host"] })
-        }
-
         try {
             const r = await fetch(`https://${host}`)
             const text = await r.text()
@@ -185,30 +193,6 @@ app.post("/cli", async (req, res) => {
         }
     }
 
-    else if (cmd === "dns") {
-        output.push(`DNS LOOKUP: ${host}`)
-        output.push("Resolved (system mode / simulated)")
-    }
-
-    else if (cmd === "geo") {
-        try {
-            const r = await fetch(`http://ip-api.com/json/${host}`)
-            const geo = await r.json()
-
-            if (!geo || geo.status !== "success") {
-                output.push("GEO LOOKUP FAILED")
-            } else {
-                output.push(`IP: ${geo.query}`)
-                output.push(`Country: ${geo.country}`)
-                output.push(`Region: ${geo.regionName}`)
-                output.push(`City: ${geo.city}`)
-                output.push(`ISP: ${geo.isp}`)
-            }
-        } catch {
-            output.push("GEO LOOKUP FAILED")
-        }
-    }
-
     else {
         output.push("UNKNOWN COMMAND")
     }
@@ -217,5 +201,5 @@ app.post("/cli", async (req, res) => {
 })
 
 app.listen(process.env.PORT || 3000, () => {
-    console.log("Secure Hybrid CLI Running")
+    console.log("Hybrid Engine Running")
 })
