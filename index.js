@@ -27,20 +27,24 @@ app.post("/geo", async (req, res) => {
 });
 
 app.get("/tile", async (req, res) => {
-    const { z, x, y } = req.query;
+    try {
+        const { z, x, y } = req.query;
 
-    const url = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
+        const url = `https://tile.openstreetmap.org/${z}/${x}/${y}.png`;
 
-    const response = await fetch(url, {
-        headers: {
-            "User-Agent": "RobloxOSMProxy"
-        }
-    });
+        const response = await fetch(url, {
+            headers: {
+                "User-Agent": "Mozilla/5.0"
+            }
+        });
 
-    const buffer = await response.arrayBuffer();
+        const buffer = await response.arrayBuffer();
 
-    res.set("Content-Type", "image/png");
-    res.send(Buffer.from(buffer));
+        res.setHeader("Content-Type", "image/png");
+        res.send(Buffer.from(buffer));
+    } catch (e) {
+        res.status(500).send("error");
+    }
 });
 
 app.listen(process.env.PORT || 3000);
