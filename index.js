@@ -1,200 +1,91 @@
 const express = require("express")
 const cors = require("cors")
-const ping = require("ping")
-const fetch = require("node-fetch")
+const fs = require("fs")
 
 const app = express()
 
 app.use(cors())
 app.use(express.json())
 
-const rateMap = {}
+const maps = {
+	city: {
+		image: "city.png",
+		description: "Main City Railway"
+	},
 
-function parseCommand(input) {
-    return input.trim().split(/\s+/)
+	metro: {
+		image: "metro.png",
+		description: "Metro System"
+	},
+
+	japan: {
+		image: "japan.png",
+		description: "Japan Railway"
+	}
 }
 
-function normalizeTarget(target) {
-    if (!target) return null
+const stations = [
+	{
+		name: "Central Station",
+		x: 420,
+		y: 315
+	},
 
-    return target
-        .trim()
-        .replace(/^https?:\/\//, "")
-        .split("/")[0]
-        .split(":")[0]
-}
+	{
+		name: "Airport",
+		x: 650,
+		y: 220
+	},
 
-function isPrivateIP(host) {
-    return (
-        host.startsWith("127.") ||
-        host.startsWith("10.") ||
-        host.startsWith("192.168.") ||
-        host.startsWith("172.16.") ||
-        host === "localhost"
-    )
-}
+	{
+		name: "North Rail",
+		x: 300,
+		y: 120
+	}
+]
 
-function isValidHost(host) {
-    if (!host) return false
-    if (host.includes("..")) return false
-    if (host.includes(" ")) return false
-    if (host.length > 253) return false
+app.get("/", (req,res) => {
+	res.send("Console Running On Port 8080 Success")
+})
 
-    return /^[a-zA-Z0-9.-]+$/.test(host)
-}
+app.get("/maps", (req,res) => {
+	res.json({
+		maps
+	})
+})
 
-function rateLimit(ip) {
-    const now = Date.now()
+app.get("/stations", (req,res) => {
+	res.json({
+		stations
+	})
+})
 
-    if (!rateMap[ip]) {
-        rateMap[ip] = []
-    }
+app.get("/search", (req,res) => {
+	const q = (req.query.q || "").toLowerCase()
 
-    rateMap[ip] = rateMap[ip].filter(t => now - t < 5000)
+	const found = stations.filter(v =>
+		v.name.toLowerCase().includes(q)
+	)
 
-    if (rateMap[ip].length >= 5) {
-        return false
-    }
+	res.json({
+		results: found
+	})
+})
 
-    rateMap[ip].push(now)
-    return true
-}
+app.get("/map/:name", (req,res) => {
+	const map = maps[req.params.name]
 
-async function httpPing(host, size = 32) {
-    const payload = "x".repeat(Math.min(size, 2048))
+	if (!map) {
+		return res.json({
+			error: "Map Not Found"
+		})
+	}
 
-    const start = Date.now()
-
-    try {
-        const res = await fetch(`https://${host}`, {
-            method: "POST",
-            body: payload
-        })
-
-        const end = Date.now()
-
-        return {
-            ok: true,
-            time: end - start,
-            status: res.status,
-            sizeUsed: payload.length
-        }
-    } catch {
-        return {
-            ok: false
-        }
-    }
-}
-
-app.post("/cli", async (req, res) => {
-    const ip = req.ip || "global"
-
-    if (!rateLimit(ip)) {
-        return res.json({ output: ["ERROR: rate limit exceeded"] })
-    }
-
-    const args = parseCommand(req.body.command || "")
-    const cmd = (args[0] || "").toLowerCase()
-    const host = normalizeTarget(args[1])
-
-    let size = 32
-    let loop = 1
-
-    for (let i = 0; i < args.length; i++) {
-        if (args[i] === "--size") {
-            size = parseInt(args[i + 1])
-        }
-
-        if (args[i] === "--loop") {
-            loop = parseInt(args[i + 1])
-        }
-    }
-
-    if (isNaN(size)) size = 32
-    if (size < 16) size = 16
-    if (size > 4096) size = 4096
-
-    if (isNaN(loop)) loop = 1
-    if (loop < 1) loop = 1
-    if (loop > 50) loop = 50
-
-    let output = []
-
-    if (cmd === "ping") {
-        if (!isValidHost(host)) {
-            return res.json({ output: ["ERROR: invalid host"] })
-        }
-
-        if (isPrivateIP(host)) {
-            return res.json({ output: ["ERROR: blocked IP range"] })
-        }
-
-        output.push(`LIVE PING START ${host}`)
-        output.push(`SIZE=${size} LOOP=${loop}`)
-        output.push("")
-
-        let success = 0
-        let total = 0
-
-        for (let i = 0; i < loop; i++) {
-            await new Promise(r => setTimeout(r, 300))
-
-            let usedHttp = false
-            let line = ""
-
-            try {
-                const icmp = await ping.promise.probe(host, { timeout: 2 })
-
-                if (icmp.alive) {
-                    const t = parseFloat(icmp.time) || 0
-                    line = `[${i + 1}] ICMP ${t}ms`
-                    success++
-                    total += t
-                } else {
-                    usedHttp = true
-                }
-            } catch {
-                usedHttp = true
-            }
-
-            if (usedHttp) {
-                const http = await httpPing(host, size)
-
-                if (http.ok) {
-                    line = `[${i + 1}] HTTP ${http.time}ms`
-                    success++
-                    total += http.time
-                } else {
-                    line = `[${i + 1}] REQUEST FAILED`
-                }
-            }
-
-            output.push(line)
-        }
-
-        output.push("")
-        output.push(`Average latency: ${success ? (total / success).toFixed(2) : 0}ms`)
-    }
-
-    else if (cmd === "trace") {
-        output.push(`TRACE ${host}`)
-        output.push("1 Client")
-        output.push("2 Network Layer")
-        output.push(`3 ${host}`)
-        output.push("TRACE COMPLETE")
-    }
-
-    else if (cmd === "echo") {
-        output.push(args.slice(1).join(" "))
-    }
-
-    else {
-        output.push("UNKNOWN COMMAND")
-    }
-
-    res.json({ output })
+	res.json({
+		map
+	})
 })
 
 app.listen(process.env.PORT || 3000, () => {
-    console.log("Hybrid Engine Running")
+	console.log("Console Running On Port 8080 Success")
 })
