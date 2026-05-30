@@ -160,10 +160,10 @@ app.get("/console", async (req, res) => {
 				]
 			})
 
-		} catch {
+		} catch (err) {
 
 			return res.json({
-				error: "PING FAILED"
+				error: String(err)
 			})
 		}
 	}
