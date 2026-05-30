@@ -7,6 +7,38 @@ const app = express()
 app.use(cors())
 app.use(express.json())
 
+const rateMap {}
+
+function normalizeTarget(target) {
+	if (!target) return null
+
+	return target
+	.trim()
+	.replace(/^https?:\/\//, "")
+	.split("/")[0]
+	.split(":")[0]
+}
+
+function isPrivateIP(host) {
+	return (
+		host.startsWith("127.") ||
+		host.startsWith("10.") ||
+		host.startsWith("192.168.") ||
+		host.startsWith("172.16.") ||
+		host.startsWith("localhost") ||
+	)
+}
+
+function isValidHost(host)
+	if (!host) return false
+
+	if (host.includes(" ")) return false
+	if (host.includes("..")) return false
+	if (host.length > 253) return false
+
+	return /^[a-zA-Z0-9.-]+$/.test(host)
+}
+
 app.get("/", (req, res) => {
 	res.send("Host Online")
 })
