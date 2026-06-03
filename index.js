@@ -1,181 +1,104 @@
-const express = require("express")
-const cors = require("cors")
-const ping = require("ping")
+const express = require("express");
+const cors = require("cors");
+const dotenv = require("dotenv");
 
-const app = express()
+dotenv.config();
 
-app.use(cors())
-app.use(express.json())
+const app = express();
 
-const rateMap = {}
+app.use(cors());
+app.use(express.json());
 
-function normalizeTarget(target) {
+const PORT = process.env.PORT || 3000;
 
-	if (!target) return null
+const MODEL = "openai/gpt-oss-120b:free";
 
-	return target
-		.trim()
-		.replace(/^https?:\/\//, "")
-		.split("/")[0]
-		.split(":")[0]
+const LIMIT = 10;
+const WINDOW_MS = 60 * 1000;
+const requests = new Map();
+
+function rateLimit(req, res, next) {
+    const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
+    const now = Date.now();
+
+    if (!requests.has(ip)) {
+        requests.set(ip, []);
+    }
+
+    const timestamps = requests.get(ip).filter(t => now - t < WINDOW_MS);
+    timestamps.push(now);
+    requests.set(ip, timestamps);
+
+    if (timestamps.length > LIMIT) {
+        return res.status(429).json({
+            error: "Too many requests. Slow down."
+        });
+    }
+
+    next();
 }
 
-function isPrivateIP(host) {
-
-	return (
-		host.startsWith("127.") ||
-		host.startsWith("10.") ||
-		host.startsWith("192.168.") ||
-		host.startsWith("172.16.") ||
-		host.startsWith("localhost")
-	)
-}
-
-function isValidHost(host) {
-
-	if (!host) return false
-
-	if (host.includes(" ")) return false
-	if (host.includes("..")) return false
-	if (host.length > 253) return false
-
-	return /^[a-zA-Z0-9.-]+$/.test(host)
-}
-
-function rateLimit(ip) {
-
-	const now = Date.now()
-
-	if (!rateMap[ip]) {
-		rateMap[ip] = []
-	}
-
-	rateMap[ip] =
-		rateMap[ip].filter(
-			t => now - t < 10000
-		)
-
-	if (rateMap[ip].length >= 5) {
-		return false
-	}
-
-	rateMap[ip].push(now)
-
-	return true
-}
+app.use("/chat", rateLimit);
 
 app.get("/", (req, res) => {
+    res.json({
+        name: "RetroAI",
+        status: "online"
+    });
+});
 
-	res.send("Online Host")
-})
+app.post("/chat", async (req, res) => {
+    try {
+        const message = req.body.message;
 
-app.get("/console", async (req, res) => {
+        if (!message) {
+            return res.status(400).json({
+                error: "No message provided"
+            });
+        }
 
-	const ip = req.ip || "global"
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${process.env.AITOKEN}`,
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://retroai.app",
+                "X-Title": "RetroAI"
+            },
+            body: JSON.stringify({
+                model: MODEL,
+                messages: [
+                    {
+                        role: "user",
+                        content: message
+                    }
+                ]
+            })
+        });
 
-	if (!rateLimit(ip)) {
+        const data = await response.json();
 
-		return res.json({
-			error: "RATE LIMIT EXCEEDED"
-		})
-	}
+        const output = data?.choices?.[0]?.message?.content;
 
-	const cmd =
-		(req.query.cmd || "")
-		.toLowerCase()
+        if (!output) {
+            return res.status(500).json({
+                error: "No response from model",
+                raw: data
+            });
+        }
 
-	const rawTarget =
-		req.query.target ||
-		"google.com"
+        res.json({
+            response: output
+        });
 
-	const target =
-		normalizeTarget(rawTarget)
+    } catch (err) {
+        res.status(500).json({
+            error: "Server error",
+            details: err.message
+        });
+    }
+});
 
-	if (cmd === "help") {
-
-		return res.json({
-			output: [
-				"COMMANDS",
-				"",
-				"ping",
-				"help"
-			]
-		})
-	}
-
-	if (cmd === "ping") {
-
-		if (!isValidHost(target)) {
-
-			return res.json({
-				error: "INVALID HOST"
-			})
-		}
-
-		if (isPrivateIP(target)) {
-
-			return res.json({
-				error: "BLOCKED TARGET"
-			})
-		}
-
-		try {
-
-			const result =
-				await ping.promise.probe(
-					target,
-					{
-						timeout: 2,
-						extra: [
-							"-c",
-							"1"
-						]
-					}
-				)
-
-			return res.json({
-
-				type: "PING",
-
-				host: target,
-
-				alive: result.alive,
-
-				time: result.time,
-
-				output: [
-
-					"PING " + target,
-
-					"",
-
-					"Alive: " +
-					result.alive,
-
-					"Latency: " +
-					result.time +
-					"ms",
-
-					"Mode: ICMP"
-				]
-			})
-
-		} catch (err) {
-
-			return res.json({
-				error: String(err)
-			})
-		}
-	}
-
-	res.json({
-		error: "UNKNOWN COMMAND"
-	})
-})
-
-app.listen(process.env.PORT || 3000, () => {
-
-	console.log(
-		"Console Running On Port 8080 Success"
-	)
-})
+app.listen(PORT, () => {
+    console.log(`RetroAI running on port ${PORT}`);
+});
