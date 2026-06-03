@@ -1,14 +1,14 @@
 {
-	"name": "RetroCommand",
-	"version": "1.0.0",
-	"description": "Console",
-	"main": "index.js",
-	"scripts": {
-		"start": "node index.js"
-	},
-	"dependencies": {
-		"cors": "^2.8.5",
-		"express": "^4.21.2",
-		"ping": "^0.4.4"
-	}
+  "name": "retroai",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2"
+  }
 }
