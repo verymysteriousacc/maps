@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const { Pool } = require("pg");
 
 dotenv.config();
 
@@ -10,111 +11,58 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const MODEL = "openai/gpt-oss-120b:free";
 
-const LIMIT = 10;
-const WINDOW_MS = 60000;
-const requests = new Map();
-
-function rateLimit(req, res, next) {
-    const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress;
-    const now = Date.now();
-
-    if (!requests.has(ip)) {
-        requests.set(ip, []);
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
     }
-
-    const timestamps = requests.get(ip).filter(t => now - t < WINDOW_MS);
-
-    timestamps.push(now);
-
-    requests.set(ip, timestamps);
-
-    if (timestamps.length > LIMIT) {
-        return res.status(429).json({
-            error: "Too many requests"
-        });
-    }
-
-    next();
-}
-
-app.get("/", (req, res) => {
-    res.json({
-        name: "RetroAI",
-        status: "online"
-    });
 });
 
-app.use("/chat", rateLimit);
-
-app.post("/chat", async (req, res) => {
+(async () => {
     try {
-        console.log("Received request");
-        console.log(req.body);
+        const result = await pool.query("SELECT NOW()");
 
-        const message = req.body?.message;
+        console.log("PostgreSQL Connected");
+        console.log(result.rows[0]);
 
-        if (!message) {
-            return res.status(400).json({
-                error: "No message provided"
-            });
-        }
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS conversations (
+                id TEXT PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
 
-        if (!process.env.AITOKEN) {
-            return res.status(500).json({
-                error: "AITOKEN environment variable not found"
-            });
-        }
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS messages (
+                id BIGSERIAL PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
 
-        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${process.env.AITOKEN}`,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                model: MODEL,
-                messages: [
-                    {
-                        role: "user",
-                        content: message
-                    }
-                ]
-            })
-        });
+        console.log("Tables Ready");
+    } catch (err) {
+        console.error("PostgreSQL Error");
+        console.error(err);
+    }
+})();
 
-        const data = await response.json();
-
-        console.log("OpenRouter Response:");
-        console.log(JSON.stringify(data, null, 2));
-
-        if (!response.ok) {
-            return res.status(response.status).json({
-                error: "OpenRouter request failed",
-                details: data
-            });
-        }
-
-        const output = data?.choices?.[0]?.message?.content;
-
-        if (!output) {
-            return res.status(500).json({
-                error: "No content returned",
-                details: data
-            });
-        }
+app.get("/", async (req, res) => {
+    try {
+        const result = await pool.query("SELECT NOW()");
 
         res.json({
-            response: output
+            name: "RetroAI",
+            status: "online",
+            database: "connected",
+            time: result.rows[0].now
         });
     } catch (err) {
-        console.error("Server Error:");
-        console.error(err);
-
         res.status(500).json({
-            error: err.message,
-            stack: err.stack
+            error: err.message
         });
     }
 });
