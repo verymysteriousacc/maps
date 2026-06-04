@@ -10,11 +10,10 @@ app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-
 const MODEL = "openai/gpt-oss-120b:free";
 
 const LIMIT = 10;
-const WINDOW_MS = 60 * 1000;
+const WINDOW_MS = 60000;
 const requests = new Map();
 
 function rateLimit(req, res, next) {
@@ -26,19 +25,19 @@ function rateLimit(req, res, next) {
     }
 
     const timestamps = requests.get(ip).filter(t => now - t < WINDOW_MS);
+
     timestamps.push(now);
+
     requests.set(ip, timestamps);
 
     if (timestamps.length > LIMIT) {
         return res.status(429).json({
-            error: "Too many requests. Slow down."
+            error: "Too many requests"
         });
     }
 
     next();
 }
-
-app.use("/chat", rateLimit);
 
 app.get("/", (req, res) => {
     res.json({
@@ -47,9 +46,14 @@ app.get("/", (req, res) => {
     });
 });
 
+app.use("/chat", rateLimit);
+
 app.post("/chat", async (req, res) => {
     try {
-        const message = req.body.message;
+        console.log("Received request");
+        console.log(req.body);
+
+        const message = req.body?.message;
 
         if (!message) {
             return res.status(400).json({
@@ -57,13 +61,17 @@ app.post("/chat", async (req, res) => {
             });
         }
 
+        if (!process.env.AITOKEN) {
+            return res.status(500).json({
+                error: "AITOKEN environment variable not found"
+            });
+        }
+
         const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: {
                 "Authorization": `Bearer ${process.env.AITOKEN}`,
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://retroai.app",
-                "X-Title": "RetroAI"
+                "Content-Type": "application/json"
             },
             body: JSON.stringify({
                 model: MODEL,
@@ -78,23 +86,35 @@ app.post("/chat", async (req, res) => {
 
         const data = await response.json();
 
+        console.log("OpenRouter Response:");
+        console.log(JSON.stringify(data, null, 2));
+
+        if (!response.ok) {
+            return res.status(response.status).json({
+                error: "OpenRouter request failed",
+                details: data
+            });
+        }
+
         const output = data?.choices?.[0]?.message?.content;
 
         if (!output) {
             return res.status(500).json({
-                error: "No response from model",
-                raw: data
+                error: "No content returned",
+                details: data
             });
         }
 
         res.json({
             response: output
         });
-
     } catch (err) {
+        console.error("Server Error:");
+        console.error(err);
+
         res.status(500).json({
-            error: "Server error",
-            details: err.message
+            error: err.message,
+            stack: err.stack
         });
     }
 });
